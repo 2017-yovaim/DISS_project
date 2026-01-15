@@ -110,19 +110,26 @@ public class ChatController {
         if (creatorId.equals(targetId)) return ResponseEntity.badRequest().body("Cannot chat with yourself");
 
         Optional<Long> existingChatId = chatRepository.findExistingChatBetweenUsers(creatorId, targetId);
+
+        Chat chatToReturn;
         if (existingChatId.isPresent()) {
-            return ResponseEntity.ok(chatRepository.findById(existingChatId.get()).get());
+            chatToReturn = chatRepository.findById(existingChatId.get()).get();
+        } else {
+            Chat newChat = new Chat();
+            newChat.setChatName("Private Chat"); // Generic name in DB
+            newChat.setCreator(userRepository.findById(creatorId).get());
+            chatToReturn = chatRepository.save(newChat);
+
+            chatMemberRepository.save(new ChatMember(chatToReturn.getId(), creatorId));
+            chatMemberRepository.save(new ChatMember(chatToReturn.getId(), targetId));
         }
 
-        Chat newChat = new Chat();
-        newChat.setChatName(targetUsername);
-        newChat.setCreator(userRepository.findById(creatorId).get());
-        Chat savedChat = chatRepository.save(newChat);
+        // FIX: Instead of returning the Chat entity, return a Map with the CORRECT name
+        Map<String, Object> response = new HashMap<>();
+        response.put("id", chatToReturn.getId());
+        response.put("chatName", targetUsername); // Ensure it shows the person you just searched for
 
-        chatMemberRepository.save(new ChatMember(savedChat.getId(), creatorId));
-        chatMemberRepository.save(new ChatMember(savedChat.getId(), targetId));
-
-        return ResponseEntity.ok(savedChat);
+        return ResponseEntity.ok(response);
     }
 
     @PostMapping("/{chatId}/read/{userId}")

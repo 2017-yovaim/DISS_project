@@ -400,13 +400,69 @@ public class ChatClient extends Application {
 
     private void showSearchUserWindow() {
         Stage searchStage = new Stage();
-        VBox layout = new VBox(10);
+        searchStage.setTitle("New Conversation");
+
+        VBox layout = new VBox(15);
         layout.setPadding(new Insets(20));
+        layout.setStyle("-fx-background-color: #ffffff;");
+
+        // 1. Group/Chat Name Field
+        Label nameLabel = new Label("Chat or Group Name (Optional):");
+        nameLabel.setStyle("-fx-font-weight: bold;");
+        TextField chatNameField = new TextField();
+        chatNameField.setPromptText("e.g. Project Team or Alice");
+
+        // 2. User Search/Selection Area
+        Label userLabel = new Label("Add Participants:");
+        userLabel.setStyle("-fx-font-weight: bold;");
+
         TextField searchField = new TextField();
-        Button createBtn = new Button("Start Chat");
-        createBtn.setOnAction(e -> createNewConversation(searchField.getText().trim(), searchStage));
-        layout.getChildren().addAll(new Label("Find User:"), searchField, createBtn);
-        searchStage.setScene(new Scene(layout, 250, 150));
+        searchField.setPromptText("Enter username...");
+
+        // Future-proofing: A list to show added members
+        ListView<String> selectedUsersList = new ListView<>();
+        selectedUsersList.setPrefHeight(100);
+
+        Button addMemberBtn = new Button("Add User");
+        addMemberBtn.setMaxWidth(Double.MAX_VALUE);
+        addMemberBtn.setOnAction(e -> {
+            String user = searchField.getText().trim();
+            if (!user.isEmpty() && !selectedUsersList.getItems().contains(user)) {
+                selectedUsersList.getItems().add(user);
+                searchField.clear();
+            }
+        });
+
+        // 3. Action Buttons
+        HBox buttonBox = new HBox(10);
+        buttonBox.setAlignment(Pos.CENTER_RIGHT);
+
+        Button cancelBtn = new Button("Cancel");
+        cancelBtn.setOnAction(e -> searchStage.close());
+
+        Button createBtn = new Button("Create Chat");
+        createBtn.setStyle("-fx-background-color: #0078FF; -fx-text-fill: white; -fx-font-weight: bold;");
+
+        // Current Logic Hook: Still uses the first user in the list to maintain 1-on-1 compatibility
+        createBtn.setOnAction(e -> {
+            if (!selectedUsersList.getItems().isEmpty()) {
+                createNewConversation(selectedUsersList.getItems().get(0), searchStage);
+            } else if (!searchField.getText().trim().isEmpty()) {
+                createNewConversation(searchField.getText().trim(), searchStage);
+            }
+        });
+
+        buttonBox.getChildren().addAll(cancelBtn, createBtn);
+
+        // Assembly
+        layout.getChildren().addAll(
+                nameLabel, chatNameField,
+                new Separator(),
+                userLabel, searchField, addMemberBtn, selectedUsersList,
+                buttonBox
+        );
+
+        searchStage.setScene(new Scene(layout, 300, 450));
         searchStage.show();
     }
 
