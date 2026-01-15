@@ -15,6 +15,7 @@ public class ChatMember {
 
     private boolean isModerator = false;
     private LocalDateTime joinedAt = LocalDateTime.now();
+    private LocalDateTime lastWatched = LocalDateTime.now();
 
     // 1. Mandatory No-Args Constructor for JPA
     public ChatMember() {}
@@ -56,5 +57,8 @@ public class ChatMember {
     public void setJoinedAt(LocalDateTime joinedAt) {
         this.joinedAt = joinedAt;
     }
+
+    public LocalDateTime getLastWatched() { return lastWatched; }
+    public void setLastWatched(LocalDateTime lastWatched) { this.lastWatched = lastWatched; }
 }
 

@@ -2,16 +2,18 @@ package com.example.chat.controller;
 
 import com.example.chat.model.Chat;
 import com.example.chat.model.ChatMember;
+import com.example.chat.model.ChatMemberId;
 import com.example.chat.model.Message;
 import com.example.chat.model.User;
 import com.example.chat.repository.ChatMemberRepository;
 import com.example.chat.repository.ChatRepository;
 import com.example.chat.repository.MessageRepository;
-import com.example.chat.repository.UserRepository; // Added this
+import com.example.chat.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -24,13 +26,10 @@ public class ChatController {
 
     @Autowired
     private ChatMemberRepository chatMemberRepository;
-
     @Autowired
     private ChatRepository chatRepository;
-
     @Autowired
-    private UserRepository userRepository; // Now correctly injected
-
+    private UserRepository userRepository;
     @Autowired
     private MessageRepository messageRepository;
 
@@ -40,63 +39,98 @@ public class ChatController {
         List<Map<String, Object>> response = new ArrayList<>();
 
         for (ChatMember member : memberships) {
-            // Fetch chat details
             Chat chat = chatRepository.findById(member.getChatId())
                     .orElseThrow(() -> new RuntimeException("Chat not found"));
 
-            // Find the OTHER member’s name in a private chat
+            // Find the OTHER user's name
             List<ChatMember> allMembers = chatMemberRepository.findByChatId(chat.getId());
-            String displayName = "Unknown";
-
+            String displayName = "Unknown User";
             for (ChatMember m : allMembers) {
-                User otherUser = userRepository.findById(m.getUserId()).orElseThrow();
-                displayName = otherUser.getUsername();
+                if (!m.getUserId().equals(userId)) {
+                    User otherUser = userRepository.findById(m.getUserId()).orElseThrow();
+                    displayName = otherUser.getUsername();
+                    break;
+                }
             }
 
-            // Fetch the last message for this chat
             Optional<Message> lastMessageOpt = messageRepository.findFirstByChatIdOrderBySentAtDesc(chat.getId());
-            String lastMessage = lastMessageOpt.isPresent()
-                    ? lastMessageOpt.get().getContent()
-                    : "No messages yet";
+            String lastMessageText = "No messages yet";
 
-            // Prepare the response for the current chat
+            // Use a default ISO string for chats with no messages
+            String lastTimeStr = "1970-01-01T00:00:00";
+            boolean hasUnread = false;
+
+            if (lastMessageOpt.isPresent()) {
+                Message msg = lastMessageOpt.get();
+                lastTimeStr = msg.getSentAt().toString();
+
+                String prefix = msg.getAuthor().getId().equals(userId) ? "You: " : msg.getAuthor().getUsername() + ": ";
+                lastMessageText = prefix + msg.getContent();
+
+                // Unread check
+                if (member.getLastWatched() == null || msg.getSentAt().isAfter(member.getLastWatched())) {
+                    if (!msg.getAuthor().getId().equals(userId)) {
+                        hasUnread = true;
+                    }
+                }
+            }
+
             Map<String, Object> map = new HashMap<>();
             map.put("id", chat.getId());
-            map.put("chatName", displayName); // The name of the other user in the chat
-            map.put("lastMessage", lastMessage); // Include the last message
-
+            map.put("chatName", displayName);
+            map.put("lastMessage", lastMessageText);
+            map.put("hasUnread", hasUnread);
+            map.put("lastMessageTime", lastTimeStr);
             response.add(map);
         }
+
+        // UPDATED SORTING LOGIC:
+        response.sort((a, b) -> {
+            // Tier 1: Unread status (Highest Priority)
+            boolean unreadA = (boolean) a.get("hasUnread");
+            boolean unreadB = (boolean) b.get("hasUnread");
+            if (unreadA != unreadB) {
+                return Boolean.compare(unreadB, unreadA);
+            }
+
+            // Tier 2: Time (Newest first)
+            // String comparison works for ISO dates (YYYY-MM-DDTHH:mm:ss)
+            return ((String) b.get("lastMessageTime")).compareTo((String) a.get("lastMessageTime"));
+        });
 
         return response;
     }
 
     @PostMapping("/create-private")
     public ResponseEntity<?> createPrivateChat(@RequestParam Long creatorId, @RequestParam String targetUsername) {
-        // 1. Find the target user
-        Optional<User> targetUser = userRepository.findByUsername(targetUsername);
+        Optional<User> targetUser = userRepository.findByUsername(targetUsername.trim());
         if (targetUser.isEmpty()) return ResponseEntity.badRequest().body("User not found");
 
         Long targetId = targetUser.get().getId();
+        if (creatorId.equals(targetId)) return ResponseEntity.badRequest().body("Cannot chat with yourself");
 
-        // 2. Check if a chat already exists between these two
         Optional<Long> existingChatId = chatRepository.findExistingChatBetweenUsers(creatorId, targetId);
-
         if (existingChatId.isPresent()) {
-            // IMPORTANT: Fetch the full chat object to ensure 'id' is in the JSON
-            Chat existingChat = chatRepository.findById(existingChatId.get()).orElseThrow();
-            return ResponseEntity.ok(existingChat);
+            return ResponseEntity.ok(chatRepository.findById(existingChatId.get()).get());
         }
 
-        // 3. If no existing chat, create a new one (Existing Logic)
         Chat newChat = new Chat();
         newChat.setChatName(targetUsername);
-        newChat.setCreator(userRepository.findById(creatorId).orElseThrow());
+        newChat.setCreator(userRepository.findById(creatorId).get());
         Chat savedChat = chatRepository.save(newChat);
 
         chatMemberRepository.save(new ChatMember(savedChat.getId(), creatorId));
         chatMemberRepository.save(new ChatMember(savedChat.getId(), targetId));
 
         return ResponseEntity.ok(savedChat);
+    }
+
+    @PostMapping("/{chatId}/read/{userId}")
+    public ResponseEntity<?> markAsRead(@PathVariable Long chatId, @PathVariable Long userId) {
+        chatMemberRepository.findById(new ChatMemberId(chatId, userId)).ifPresent(m -> {
+            m.setLastWatched(LocalDateTime.now());
+            chatMemberRepository.save(m);
+        });
+        return ResponseEntity.ok().build();
     }
 }

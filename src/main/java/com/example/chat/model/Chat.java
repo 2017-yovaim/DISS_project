@@ -18,6 +18,7 @@ public class Chat {
 
     private LocalDateTime createdAt = LocalDateTime.now();
 
+
     public Chat() {}
 
     public Long getId() {

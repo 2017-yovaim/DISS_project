@@ -112,16 +112,27 @@ public class ChatClient extends Application {
             protected void updateItem(ChatEntry item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) {
-                    setText(null);
-                    setStyle("");
+                    setGraphic(null);
                 } else {
-                    setText(item.name + (item.hasUnread ? " (New Message!)" : ""));
+                    VBox container = new VBox(2);
+                    Label nameLabel = new Label(item.name);
+                    Label msgLabel = new Label(item.lastMsg);
+
+                    // Style the Name
+                    nameLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
+
+                    // Style the Message snippet
+                    msgLabel.setStyle("-fx-font-size: 12px; -fx-text-fill: #888888;");
+                    msgLabel.setEllipsisString("..."); // Truncate long messages
+
                     if (item.hasUnread) {
-                        // Make it bold and slightly larger to "pop"
-                        setStyle("-fx-font-weight: bold; -fx-text-fill: #000000; -fx-font-size: 14px;");
-                    } else {
-                        setStyle("-fx-font-weight: normal; -fx-text-fill: #666666;");
+                        // Messenger style: Unread messages have a blue name or a blue dot
+                        nameLabel.setStyle(nameLabel.getStyle() + "-fx-text-fill: #0078FF;");
+                        msgLabel.setStyle("-fx-font-size: 12px; -fx-text-fill: #000000; -fx-font-weight: bold;");
                     }
+
+                    container.getChildren().addAll(nameLabel, msgLabel);
+                    setGraphic(container);
                 }
             }
         });
@@ -159,6 +170,15 @@ public class ChatClient extends Application {
     private void showChatScreen(long chatId, String chatName) {
         this.currentChatId = chatId;
         this.isInChat = true;
+
+        // NOTIFY SERVER CHAT IS READ
+        HttpClient.newHttpClient().sendAsync(
+                HttpRequest.newBuilder()
+                        .uri(URI.create("http://localhost:8080/api/chats/" + chatId + "/read/" + currentUserId))
+                        .POST(HttpRequest.BodyPublishers.noBody()).build(),
+                HttpResponse.BodyHandlers.ofString()
+        );
+
         if (dashboardFilter != null) dashboardFilter.stop();
 
         chatListView = new ListView<>();
@@ -245,28 +265,51 @@ public class ChatClient extends Application {
 
     private void fetchUserChats(ListView<ChatEntry> listView) {
         HttpClient.newHttpClient().sendAsync(
-                HttpRequest.newBuilder().uri(URI.create("http://localhost:8080/api/chats/user/" + currentUserId)).GET().build(),
+                HttpRequest.newBuilder()
+                        .uri(URI.create("http://localhost:8080/api/chats/user/" + currentUserId))
+                        .GET()
+                        .build(),
                 HttpResponse.BodyHandlers.ofString()
         ).thenAccept(response -> {
             if (response.statusCode() == 200) {
                 String body = response.body();
                 Platform.runLater(() -> {
                     List<ChatEntry> chatEntries = new ArrayList<>();
-                    if (!(body.equals("[]") || body.isEmpty())) {
-                        String[] chats = body.split("\\},\\{");
-                        for (String chat : chats) {
-                            String name = chat.replaceAll(".*\"chatName\":\"([^\"]+)\".*", "$1");
-                            String id = chat.replaceAll(".*\"id\":(\\d+).*", "$1");
-                            // We assume your backend sends "hasUnread":true
-                            boolean unread = chat.contains("\"hasUnread\":true");
 
-                            chatEntries.add(new ChatEntry(Long.parseLong(id), name, unread));
+                    // Check if body is a valid JSON array and not empty
+                    if (body != null && body.length() > 2 && !body.equals("[]")) {
+                        try {
+                            // Remove outer brackets [ ]
+                            String content = body.substring(1, body.length() - 1);
+
+                            // Split exactly between objects: } , {
+                            String[] chats = content.split("(?<=\\}),(?=\\{)");
+
+                            for (String chatJson : chats) {
+                                String json = chatJson.trim();
+                                // Ensure the string is treated as a full JSON object for extractors
+                                if (!json.startsWith("{")) json = "{" + json;
+                                if (!json.endsWith("}")) json = json + "}";
+
+                                long id = extractIdFromJSON(json, "id");
+                                String name = extractValueFromJSON(json, "chatName");
+                                String lastMsg = extractValueFromJSON(json, "lastMessage");
+                                boolean unread = json.contains("\"hasUnread\":true");
+                                String lastTime = json.contains("\"lastMessageTime\":\"")
+                                        ? json.replaceAll(".*\"lastMessageTime\":\"([^\"]+)\".*", "$1")
+                                        : "";
+
+                                if (id != -1) {
+                                    chatEntries.add(new ChatEntry(id, name, lastMsg, unread, lastTime));
+                                }
+                            }
+                        } catch (Exception e) {
+                            System.err.println("Parsing error: " + e.getMessage());
                         }
                     }
 
-                    // SORTING: Unread messages come first
-                    chatEntries.sort((a, b) -> Boolean.compare(b.hasUnread, a.hasUnread));
-
+                    // SORTING: Unread messages first
+                    chatEntries.sort((a, b) -> b.lastTime.compareTo(a.lastTime));
                     listView.getItems().setAll(chatEntries);
                 });
             }
@@ -305,9 +348,10 @@ public class ChatClient extends Application {
                             long msgChatId = extractIdFromJSON(msg, "chatId");
                             if (isInChat && currentChatId == msgChatId) {
                                 addMessageToUI(extractValueFromJSON(msg, "time"), extractValueFromJSON(msg, "author"), extractValueFromJSON(msg, "content"));
-                            } else {
-                                showToastNotification("New message from " + extractValueFromJSON(msg, "author"));
                             }
+//                            else {
+//                                showToastNotification("New message from " + extractValueFromJSON(msg, "author"));
+//                            }
                         });
                         return WebSocket.Listener.super.onText(webSocket, data, last);
                     }
@@ -371,12 +415,16 @@ public class ChatClient extends Application {
     private static class ChatEntry {
         long id;
         String name;
+        String lastMsg;
         boolean hasUnread;
+        String lastTime; // Add this
 
-        ChatEntry(long id, String name, boolean hasUnread) {
+        ChatEntry(long id, String name, String lastMsg, boolean hasUnread, String lastTime) {
             this.id = id;
             this.name = name;
+            this.lastMsg = lastMsg;
             this.hasUnread = hasUnread;
+            this.lastTime = lastTime;
         }
     }
 }
