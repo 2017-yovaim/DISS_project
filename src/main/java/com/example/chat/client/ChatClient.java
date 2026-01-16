@@ -5,6 +5,7 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.geometry.Side;
 import javafx.scene.Scene;
 import javafx.scene.control.*;
 import javafx.scene.layout.*;
@@ -32,6 +33,12 @@ public class ChatClient extends Application {
     @Override
     public void start(Stage stage) {
         this.primaryStage = stage;
+
+        // Lock the window size
+        primaryStage.setResizable(false);
+        primaryStage.setWidth(350);
+        primaryStage.setHeight(500);
+
         showLoginScreen();
     }
 
@@ -92,41 +99,73 @@ public class ChatClient extends Application {
         });
     }
 
+    private void handleLogout() {
+        if (dashboardFilter != null) dashboardFilter.stop();
+
+        // Clear session info
+        this.currentUserId = -1;
+        this.currentUsername = null;
+        this.isInChat = false;
+
+        // Close WebSocket if exists
+        if (ws != null) {
+            ws.sendClose(WebSocket.NORMAL_CLOSURE, "Logout");
+            ws = null;
+        }
+
+        showLoginScreen();
+    }
+
     // --- DASHBOARD ---
     private void showDashboard() {
         this.isInChat = false;
         this.currentChatId = -1;
 
+        // Stop previous timer to prevent memory leaks or duplicate refreshes
         if (dashboardFilter != null) dashboardFilter.stop();
 
         VBox dashboard = new VBox(15);
         dashboard.setPadding(new Insets(20));
         dashboard.setAlignment(Pos.TOP_CENTER);
+        dashboard.setStyle("-fx-background-color: #ffffff;");
 
-        // 1. Change to ListView of ChatEntry objects
+        // --- NEW HEADER WITH LOGOUT ---
+        HBox header = new HBox();
+        header.setAlignment(Pos.CENTER_LEFT);
+
+        Label welcomeLabel = new Label("Welcome, " + currentUsername);
+        welcomeLabel.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS); // Pushes logout button to the far right
+
+        Button logoutBtn = new Button("Logout");
+        logoutBtn.setStyle("-fx-background-color: #FF3B30; -fx-text-fill: white; -fx-font-weight: bold; -fx-background-radius: 5;");
+        logoutBtn.setOnAction(e -> handleLogout());
+
+        header.getChildren().addAll(welcomeLabel, spacer, logoutBtn);
+        // ------------------------------
+
         ListView<ChatEntry> chatListViewObj = new ListView<>();
+        VBox.setVgrow(chatListViewObj, Priority.ALWAYS); // List expands to fill space
 
-        // 2. Define the CellFactory for BOLD and "POPPING" style
         chatListViewObj.setCellFactory(lv -> new ListCell<ChatEntry>() {
             @Override
             protected void updateItem(ChatEntry item, boolean empty) {
                 super.updateItem(item, empty);
                 if (empty || item == null) {
                     setGraphic(null);
+                    setText(null);
                 } else {
                     VBox container = new VBox(2);
                     Label nameLabel = new Label(item.name);
                     Label msgLabel = new Label(item.lastMsg);
 
-                    // Style the Name
                     nameLabel.setStyle("-fx-font-size: 14px; -fx-font-weight: bold;");
-
-                    // Style the Message snippet
                     msgLabel.setStyle("-fx-font-size: 12px; -fx-text-fill: #888888;");
-                    msgLabel.setEllipsisString("..."); // Truncate long messages
+                    msgLabel.setEllipsisString("...");
 
                     if (item.hasUnread) {
-                        // Messenger style: Unread messages have a blue name or a blue dot
                         nameLabel.setStyle(nameLabel.getStyle() + "-fx-text-fill: #0078FF;");
                         msgLabel.setStyle("-fx-font-size: 12px; -fx-text-fill: #000000; -fx-font-weight: bold;");
                     }
@@ -160,10 +199,40 @@ public class ChatClient extends Application {
 
         Button startNewChatBtn = new Button("+ Start New Conversation");
         startNewChatBtn.setMaxWidth(Double.MAX_VALUE);
+        startNewChatBtn.setStyle("-fx-background-color: #0078FF; -fx-text-fill: white; -fx-font-weight: bold; -fx-padding: 10;");
         startNewChatBtn.setOnAction(e -> showSearchUserWindow());
 
-        dashboard.getChildren().addAll(new Label("Welcome, " + currentUsername), chatListViewObj, startNewChatBtn);
+        dashboard.getChildren().addAll(header, chatListViewObj, startNewChatBtn);
+        primaryStage.setTitle("Dashboard");
         primaryStage.setScene(new Scene(dashboard, 350, 500));
+    }
+
+    private void confirmAndDeleteChat(long chatId) {
+        Alert alert = new Alert(Alert.AlertType.CONFIRMATION);
+        alert.setTitle("Confirm Deletion");
+        alert.setHeaderText("Delete this conversation?");
+        alert.setContentText("This will remove all messages for everyone. This action cannot be undone.");
+
+        alert.showAndWait().ifPresent(response -> {
+            if (response == ButtonType.OK) {
+                HttpClient.newHttpClient().sendAsync(
+                        HttpRequest.newBuilder()
+                                .uri(URI.create("http://localhost:8080/api/chats/" + chatId))
+                                .DELETE()
+                                .build(),
+                        HttpResponse.BodyHandlers.ofString()
+                ).thenAccept(res -> {
+                    Platform.runLater(() -> {
+                        if (res.statusCode() == 200) {
+                            this.isInChat = false;
+                            showDashboard(); // Refresh by going back
+                        } else {
+                            new Alert(Alert.AlertType.ERROR, "Error deleting chat: " + res.body()).show();
+                        }
+                    });
+                });
+            }
+        });
     }
 
     // --- CHAT SCREEN ---
@@ -185,26 +254,79 @@ public class ChatClient extends Application {
         VBox.setVgrow(chatListView, Priority.ALWAYS);
         chatListView.setStyle("-fx-background-color: #F4F4F4; -fx-control-inner-background: #F4F4F4;");
 
-        Label headerLabel = new Label(chatName);
-        headerLabel.setStyle("-fx-font-size: 18px; -fx-font-weight: bold;");
+        // --- UPDATED HEADER ---
+        HBox header = new HBox(10);
+        header.setAlignment(Pos.CENTER_LEFT);
+        header.setMinHeight(40); // Keeps header height consistent
 
+        Button backBtn = new Button("← Back");
+        backBtn.setOnAction(e -> {
+            this.isInChat = false;
+            showDashboard();
+        });
+
+        Label headerLabel = new Label(chatName);
+        headerLabel.setStyle("-fx-font-size: 16px; -fx-font-weight: bold;");
+        headerLabel.setMaxWidth(140); // Prevents text from pushing the window wide
+        headerLabel.setTextOverrun(OverrunStyle.ELLIPSIS); // Adds "..." for long names
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        // Circular Option Menu
+        MenuButton optionsMenu = new MenuButton();
+        optionsMenu.setStyle(
+                "-fx-background-color: #E0E0E0; " +
+                        "-fx-background-radius: 50; " +
+                        "-fx-min-width: 30px; " +
+                        "-fx-max-width: 30px; " +
+                        "-fx-min-height: 30px; " +
+                        "-fx-max-height: 30px; " +
+                        "-fx-padding: 0; " +
+                        "-fx-cursor: hand;"
+        );
+
+        MenuItem deleteItem = new MenuItem("Delete Chat");
+        deleteItem.setStyle("-fx-text-fill: #d32f2f; -fx-font-size: 13px;");
+        deleteItem.setOnAction(e -> confirmAndDeleteChat(chatId));
+
+        optionsMenu.getItems().addAll(deleteItem);
+        optionsMenu.setPopupSide(Side.BOTTOM);
+
+        // FIXED: Listener with Null Check and Platform.runLater
+        optionsMenu.showingProperty().addListener((obs, wasShowing, isShowing) -> {
+            if (isShowing) {
+                Platform.runLater(() -> {
+                    ContextMenu menu = optionsMenu.getContextMenu();
+                    if (menu != null) {
+                        double buttonMaxX = optionsMenu.localToScreen(optionsMenu.getBoundsInLocal()).getMaxX();
+                        double menuWidth = menu.getWidth();
+                        // Aligns the right edge of the menu with the right edge of the button
+                        menu.setX(buttonMaxX - menuWidth);
+                    }
+                });
+            }
+        });
+
+        header.getChildren().addAll(backBtn, headerLabel, spacer, optionsMenu);
+
+        // --- INPUT AREA ---
         input = new TextField();
-        input.setPromptText("Message " + chatName + "...");
+        input.setPromptText("Message...");
         input.setOnAction(e -> sendMessage());
 
         Button sendBtn = new Button("Send");
         sendBtn.setOnAction(e -> sendMessage());
 
-        Button backBtn = new Button("← Back");
-        backBtn.setOnAction(e -> showDashboard());
-
         HBox inputRow = new HBox(10, input, sendBtn);
         HBox.setHgrow(input, Priority.ALWAYS);
 
-        VBox root = new VBox(10, backBtn, headerLabel, chatListView, inputRow);
+        VBox root = new VBox(10, header, chatListView, inputRow);
         root.setPadding(new Insets(10));
 
-        primaryStage.setScene(new Scene(root, 400, 500));
+        primaryStage.setTitle("Chat with " + chatName);
+        // Setting width to 350 to match dashboard and keep window size consistent
+        primaryStage.setScene(new Scene(root, 350, 500));
         loadChatHistory();
     }
 
@@ -336,6 +458,32 @@ public class ChatClient extends Application {
         });
     }
 
+    private void createGroupConversation(String groupName, List<String> members, Stage windowToClose) {
+        // Convert list to JSON array string
+        String usersJson = "[\"" + String.join("\",\"", members) + "\"]";
+
+        String url = String.format("http://localhost:8080/api/chats/create-group?creatorId=%d&groupName=%s",
+                currentUserId, groupName.replace(" ", "%20"));
+
+        HttpClient.newHttpClient().sendAsync(
+                HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(usersJson))
+                        .build(),
+                HttpResponse.BodyHandlers.ofString()
+        ).thenAccept(response -> {
+            if (response.statusCode() == 200) {
+                long chatId = extractIdFromJSON(response.body(), "id");
+                String chatName = extractValueFromJSON(response.body(), "chatName");
+                Platform.runLater(() -> {
+                    windowToClose.close();
+                    showChatScreen(chatId, chatName);
+                });
+            }
+        });
+    }
+
     // --- WEBSOCKET & UTILS ---
     private void connectWebSocket() {
         if (ws != null) return;
@@ -443,12 +591,16 @@ public class ChatClient extends Application {
         Button createBtn = new Button("Create Chat");
         createBtn.setStyle("-fx-background-color: #0078FF; -fx-text-fill: white; -fx-font-weight: bold;");
 
-        // Current Logic Hook: Still uses the first user in the list to maintain 1-on-1 compatibility
         createBtn.setOnAction(e -> {
-            if (!selectedUsersList.getItems().isEmpty()) {
-                createNewConversation(selectedUsersList.getItems().get(0), searchStage);
-            } else if (!searchField.getText().trim().isEmpty()) {
-                createNewConversation(searchField.getText().trim(), searchStage);
+            List<String> members = selectedUsersList.getItems();
+            String gName = chatNameField.getText().trim();
+
+            if (members.size() > 1 || !gName.isEmpty()) {
+                // It's a group
+                createGroupConversation(gName, members, searchStage);
+            } else if (members.size() == 1) {
+                // It's a private 1-on-1
+                createNewConversation(members.get(0), searchStage);
             }
         });
 

@@ -43,13 +43,19 @@ public class ChatController {
                     .orElseThrow(() -> new RuntimeException("Chat not found"));
 
             // Find the OTHER user's name
-            List<ChatMember> allMembers = chatMemberRepository.findByChatId(chat.getId());
-            String displayName = "Unknown User";
-            for (ChatMember m : allMembers) {
-                if (!m.getUserId().equals(userId)) {
-                    User otherUser = userRepository.findById(m.getUserId()).orElseThrow();
-                    displayName = otherUser.getUsername();
-                    break;
+//            List<ChatMember> allMembers = chatMemberRepository.findByChatId(chat.getId());
+            String displayName = chat.getChatName();
+
+            // If it's a private chat (usually indicated by a generic name or null),
+            // then use the "other user" logic. Otherwise, use the group name.
+            if (displayName == null || displayName.equals("Private Chat") || displayName.isEmpty()) {
+                List<ChatMember> allMembers = chatMemberRepository.findByChatId(chat.getId());
+                for (ChatMember m : allMembers) {
+                    if (!m.getUserId().equals(userId)) {
+                        User otherUser = userRepository.findById(m.getUserId()).orElseThrow();
+                        displayName = otherUser.getUsername();
+                        break;
+                    }
                 }
             }
 
@@ -132,12 +138,57 @@ public class ChatController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/create-group")
+    public ResponseEntity<?> createGroupChat(
+            @RequestParam Long creatorId,
+            @RequestParam String groupName,
+            @RequestBody List<String> usernames) {
+
+        // 1. Create the Chat Entity
+        Chat newChat = new Chat();
+        newChat.setChatName(groupName.isEmpty() ? "New Group" : groupName);
+        newChat.setCreator(userRepository.findById(creatorId).get());
+        Chat savedChat = chatRepository.save(newChat);
+
+        // 2. Add the Creator as a member
+        chatMemberRepository.save(new ChatMember(savedChat.getId(), creatorId));
+
+        // 3. Add all other users by their usernames
+        for (String username : usernames) {
+            userRepository.findByUsername(username.trim()).ifPresent(user -> {
+                if (!user.getId().equals(creatorId)) { // Don't add creator twice
+                    chatMemberRepository.save(new ChatMember(savedChat.getId(), user.getId()));
+                }
+            });
+        }
+
+        // 4. Return the new chat info
+        Map<String, Object> response = new HashMap<>();
+        response.put("id", savedChat.getId());
+        response.put("chatName", savedChat.getChatName());
+        return ResponseEntity.ok(response);
+    }
+
     @PostMapping("/{chatId}/read/{userId}")
     public ResponseEntity<?> markAsRead(@PathVariable Long chatId, @PathVariable Long userId) {
         chatMemberRepository.findById(new ChatMemberId(chatId, userId)).ifPresent(m -> {
             m.setLastWatched(LocalDateTime.now());
             chatMemberRepository.save(m);
         });
+        return ResponseEntity.ok().build();
+    }
+
+    @DeleteMapping("/{chatId}")
+    public ResponseEntity<?> deleteChat(@PathVariable Long chatId) {
+        // 1. Remove all members from the chat first
+        chatMemberRepository.deleteAll(chatMemberRepository.findByChatId(chatId));
+
+        // 2. Remove all messages (Optional, depending on your DB cascade settings)
+        messageRepository.deleteAll(messageRepository.findByChatId(chatId));
+
+        // 3. Delete the chat itself
+        chatRepository.deleteById(chatId);
+
         return ResponseEntity.ok().build();
     }
 }
